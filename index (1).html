@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PerspFix">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="manifest" href="manifest.json">
+<title>PerspectiveFix</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:#0f0f0f;color:#fff;font-family:-apple-system,sans-serif;display:flex;flex-direction:column;height:100dvh}
+#topbar{padding:16px 20px 10px;display:flex;align-items:center;justify-content:space-between;background:#1a1a1a;border-bottom:1px solid #2a2a2a;flex-shrink:0}
+#topbar h1{font-size:18px;font-weight:600}
+#status{font-size:12px;color:#888;max-width:60%;text-align:right}
+#canvas-wrap{flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:#0f0f0f;min-height:0}
+#preview,#result-img{max-width:100%;max-height:100%;object-fit:contain;display:none}
+#drop-zone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:40px;text-align:center;cursor:pointer}
+#drop-zone svg{opacity:0.3}
+#drop-zone p{color:#666;font-size:15px;line-height:1.5}
+#drop-zone .hint{font-size:13px;color:#444}
+#bottombar{background:#1a1a1a;border-top:1px solid #2a2a2a;padding:12px 16px 28px;flex-shrink:0;display:flex;flex-direction:column;gap:10px}
+.btn-row{display:flex;gap:10px}
+.btn{flex:1;padding:14px 8px;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:opacity 0.15s,transform 0.1s}
+.btn:active{transform:scale(0.97);opacity:0.85}
+.btn-primary{background:#ff6b35;color:#fff}
+.btn-secondary{background:#2a2a2a;color:#fff}
+.btn-success{background:#1d9e75;color:#fff}
+.btn:disabled{opacity:0.3;pointer-events:none}
+#file-input{display:none}
+#loading{display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;position:absolute;inset:0;background:rgba(0,0,0,0.75);z-index:10}
+#loading p{font-size:14px;color:#ccc;text-align:center;padding:0 20px}
+.spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#ff6b35;border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ios-banner{background:#1d9e75;color:#fff;font-size:13px;padding:10px 16px;text-align:center;flex-shrink:0;display:none}
+.ios-banner.show{display:block}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>PerspFix</h1>
+  <span id="status">Sube una imagen</span>
+</div>
+
+<div id="ios-install" class="ios-banner"></div>
+
+<div id="canvas-wrap">
+  <div id="drop-zone" onclick="pickImage()">
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5">
+      <rect x="3" y="3" width="18" height="18" rx="2"/>
+      <path d="M3 9l4-4 4 4 4-6 4 6"/>
+      <path d="M12 12v6m-3-3l3 3 3-3"/>
+    </svg>
+    <p>Toca para elegir una imagen</p>
+    <p class="hint">JPG o PNG — la IA corregirá la perspectiva</p>
+  </div>
+  <img id="preview" alt="Vista previa"/>
+  <img id="result-img" alt="Resultado"/>
+  <div id="loading">
+    <div class="spinner"></div>
+    <p id="loading-text">Analizando perspectiva...</p>
+  </div>
+</div>
+
+<div id="bottombar">
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="pickImage()">📂 Imagen</button>
+    <button class="btn btn-primary" id="btn-fix" onclick="fixPerspective()" disabled>✨ Corregir</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="btn-reset" onclick="resetAll()" disabled>↩ Reset</button>
+    <button class="btn btn-success" id="btn-save" onclick="saveImage()" disabled>💾 Guardar</button>
+  </div>
+</div>
+
+<input type="file" id="file-input" accept="image/*" onchange="loadImage(this)">
+
+<script>
+let originalFile = null;
+let resultDataUrl = null;
+
+function setStatus(t){ document.getElementById('status').textContent = t }
+function setLoading(show, text=''){
+  const el = document.getElementById('loading');
+  el.style.display = show ? 'flex' : 'none';
+  if(text) document.getElementById('loading-text').textContent = text;
+}
+
+function pickImage(){
+  document.getElementById('file-input').click();
+}
+
+function loadImage(input){
+  const file = input.files[0];
+  if(!file) return;
+  originalFile = file;
+  resultDataUrl = null;
+  const url = URL.createObjectURL(file);
+  const prev = document.getElementById('preview');
+  const res = document.getElementById('result-img');
+  document.getElementById('drop-zone').style.display = 'none';
+  res.style.display = 'none';
+  prev.src = url;
+  prev.style.display = 'block';
+  document.getElementById('btn-fix').disabled = false;
+  document.getElementById('btn-reset').disabled = false;
+  document.getElementById('btn-save').disabled = true;
+  setStatus('Lista — toca Corregir');
+}
+
+async function fileToBase64(file){
+  return new Promise((res,rej)=>{
+    const r = new FileReader();
+    r.onload = ()=> res(r.result.split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+async function callClaude(b64, mediaType){
+  const resp = await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'anthropic-dangerous-direct-browser-access':'true',
+      'x-api-key':'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'
+    },
+    body: JSON.stringify({
+      model:'claude-sonnet-4-6',
+      max_tokens:1000,
+      messages:[{
+        role:'user',
+        content:[
+          {type:'image', source:{type:'base64', media_type:mediaType, data:b64}},
+          {type:'text', text:`Analiza esta imagen y detecta la deformación de perspectiva.
+Devuelve SOLO JSON sin texto extra:
+{
+  "has_perspective_distortion": true/false,
+  "description": "descripción breve",
+  "src_points": [[x1,y1],[x2,y2],[x3,y3],[x4,y4]],
+  "correction_type": "keystone_vertical|keystone_horizontal|tilt|complex"
+}
+src_points: las 4 esquinas del área que debería ser rectangular, orden: top-left, top-right, bottom-right, bottom-left. Coordenadas normalizadas 0-1000.`}
+        ]
+      }]
+    })
+  });
+  if(!resp.ok){
+    const err = await resp.text();
+    throw new Error('API error: ' + resp.status + ' ' + err.substring(0,100));
+  }
+  return resp.json();
+}
+
+async function fixPerspective(){
+  if(!originalFile) return;
+  setLoading(true, 'Analizando perspectiva con IA...');
+  document.getElementById('btn-fix').disabled = true;
+
+  try {
+    const b64 = await fileToBase64(originalFile);
+    const mediaType = originalFile.type || 'image/jpeg';
+
+    const data = await callClaude(b64, mediaType);
+    const rawText = data.content.map(c=>c.text||'').join('');
+    
+    let analysis;
+    try {
+      const clean = rawText.replace(/```json|```/g,'').trim();
+      analysis = JSON.parse(clean);
+    } catch(e){
+      throw new Error('Error al procesar respuesta de IA');
+    }
+
+    if(!analysis.has_perspective_distortion){
+      setStatus('Perspectiva ya correcta');
+      setLoading(false);
+      document.getElementById('btn-fix').disabled = false;
+      return;
+    }
+
+    setLoading(true, 'Corrigiendo perspectiva...');
+    const corrected = await applyCorrection(originalFile, analysis);
+    resultDataUrl = corrected;
+
+    const resImg = document.getElementById('result-img');
+    document.getElementById('preview').style.display = 'none';
+    resImg.src = corrected;
+    resImg.style.display = 'block';
+
+    document.getElementById('btn-save').disabled = false;
+    document.getElementById('btn-fix').disabled = false;
+    setStatus(analysis.description || 'Corregida');
+
+  } catch(err){
+    setStatus('Error: ' + err.message);
+    document.getElementById('btn-fix').disabled = false;
+  }
+  setLoading(false);
+}
+
+async function applyCorrection(file, analysis){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const W = img.naturalWidth, H = img.naturalHeight;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const pts = analysis.src_points;
+      const s = v => [v[0]/1000*W, v[1]/1000*H];
+      const tl=s(pts[0]),tr=s(pts[1]),br=s(pts[2]),bl=s(pts[3]);
+      const outW = Math.max(Math.hypot(tr[0]-tl[0],tr[1]-tl[1]),Math.hypot(br[0]-bl[0],br[1]-bl[1]));
+      const outH = Math.max(Math.hypot(bl[0]-tl[0],bl[1]-tl[1]),Math.hypot(br[0]-tr[0],br[1]-tr[1]));
+      canvas.width = Math.round(outW);
+      canvas.height = Math.round(outH);
+      const dst = [{x:0,y:0},{x:outW,y:0},{x:outW,y:outH},{x:0,y:outH}];
+      const src2 = [tl,tr,br,bl].map(p=>({x:p[0],y:p[1]}));
+      const M = getPerspective(src2, dst);
+      const imgData = ctx.createImageData(canvas.width, canvas.height);
+      const tmp = document.createElement('canvas');
+      tmp.width=W; tmp.height=H;
+      tmp.getContext('2d').drawImage(img,0,0);
+      const srcD = tmp.getContext('2d').getImageData(0,0,W,H);
+      for(let y=0;y<canvas.height;y++){
+        for(let x=0;x<canvas.width;x++){
+          const d = M[6]*x+M[7]*y+1;
+          const sx=Math.round((M[0]*x+M[1]*y+M[2])/d);
+          const sy=Math.round((M[3]*x+M[4]*y+M[5])/d);
+          if(sx>=0&&sx<W&&sy>=0&&sy<H){
+            const si=(sy*W+sx)*4, di=(y*canvas.width+x)*4;
+            imgData.data[di]=srcD.data[si];
+            imgData.data[di+1]=srcD.data[si+1];
+            imgData.data[di+2]=srcD.data[si+2];
+            imgData.data[di+3]=srcD.data[si+3];
+          }
+        }
+      }
+      ctx.putImageData(imgData,0,0);
+      resolve(canvas.toDataURL('image/png',1.0));
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function getPerspective(src, dst){
+  const A=[], b=[];
+  for(let i=0;i<4;i++){
+    const {x:sx,y:sy}=src[i], {x:dx,y:dy}=dst[i];
+    A.push([sx,sy,1,0,0,0,-dx*sx,-dx*sy]);
+    A.push([0,0,0,sx,sy,1,-dy*sx,-dy*sy]);
+    b.push(dx); b.push(dy);
+  }
+  return gaussElim(A,b);
+}
+
+function gaussElim(A,b){
+  const n=8, M=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let mx=c;
+    for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[mx][c])) mx=r;
+    [M[c],M[mx]]=[M[mx],M[c]];
+    for(let r=c+1;r<n;r++){
+      const f=M[r][c]/M[c][c];
+      for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k];
+    }
+  }
+  const x=new Array(n).fill(0);
+  for(let i=n-1;i>=0;i--){
+    x[i]=M[i][n]/M[i][i];
+    for(let k=i-1;k>=0;k--) M[k][n]-=M[k][i]*x[i];
+  }
+  return [...x,1];
+}
+
+async function saveImage(){
+  if(!resultDataUrl) return;
+  try {
+    const a = document.createElement('a');
+    a.href = resultDataUrl;
+    a.download = 'texture_' + Date.now() + '.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setStatus('Guardada');
+  } catch(e){ setStatus('Error al guardar') }
+}
+
+function resetAll(){
+  originalFile = null; resultDataUrl = null;
+  document.getElementById('preview').style.display = 'none';
+  document.getElementById('result-img').style.display = 'none';
+  document.getElementById('drop-zone').style.display = 'flex';
+  document.getElementById('btn-fix').disabled = true;
+  document.getElementById('btn-reset').disabled = true;
+  document.getElementById('btn-save').disabled = true;
+  document.getElementById('file-input').value = '';
+  setStatus('Sube una imagen');
+}
+
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+if(isIOS && !isStandalone){
+  const b = document.getElementById('ios-install');
+  b.textContent = '📲 Instalar: Compartir → Añadir a pantalla de inicio';
+  b.style.display = 'block';
+}
+
+if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
